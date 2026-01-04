@@ -1,0 +1,11 @@
+# secrets
+.streamlit/secrets.toml
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# mac
+.DS_Store
+
