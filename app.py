@@ -6,368 +6,435 @@ from openai import OpenAI
 # Helpers
 # -------------------------
 def parse_items(text: str):
-    """
-    Converts model output lines like:
-    - <target> — <english>
-    into a list of dicts: [{"front": "...", "back": "..."}, ...]
-    """
     items = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("- "):
+    seps = [" — ", " – ", " - ", "—", "–", "-"]
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
             continue
-        line = line[2:]  # remove "- "
-        if " — " not in line:
+
+        if line.startswith("- "):
+            line = line[2:].strip()
+        else:
+            if len(line) >= 3 and line[0].isdigit():
+                if (line[1:3] == ". ") or (line[1:3] == ") "):
+                    line = line[3:].strip()
+
+        sep_found = None
+        for sep in seps:
+            if sep in line:
+                sep_found = sep
+                break
+        if not sep_found:
             continue
-        left, right = line.split(" — ", 1)
-        items.append({"front": left.strip(), "back": right.strip()})
+
+        left, right = line.split(sep_found, 1)
+        left = left.strip()
+        right = right.strip()
+        if not left or not right:
+            continue
+
+        items.append({"front": left, "back": right})
+
     return items
 
 
 def norm_key(s: str) -> str:
-    """Normalize for duplicate checks (case-insensitive, trim, collapse whitespace)."""
     return " ".join((s or "").strip().lower().split())
 
 
-def desired_count_for(generate_type: str) -> int:
-    return 10 if generate_type == "Phrases" else 20
+def desired_count_for(kind: str) -> int:
+    return 10 if kind == "Phrases" else 20
 
 
 # -------------------------
 # Page setup
 # -------------------------
 st.set_page_config(page_title="PalAbrazo", page_icon="🤗")
-
 st.title("🤗 PalAbrazo")
-st.caption("Generate words/verbs/phrases with English meanings, then practise with flashcards.")
+st.caption("Generate vocabulary and practise with flashcards.")
 
 tab_generate, tab_flashcards = st.tabs(["Generate", "Flashcards"])
 
-# Persisted state
-if "last_items" not in st.session_state:
-    st.session_state["last_items"] = []
-if "last_meta" not in st.session_state:
-    st.session_state["last_meta"] = {}
+# -------------------------
+# Branding + UI foundation
+# -------------------------
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+
+    * { font-family: 'Inter', sans-serif !important; }
+
+    .block-container {
+      padding-top: 2.25rem;
+      padding-bottom: 2rem;
+      max-width: 900px;
+    }
+
+    h1 { font-weight: 800 !important; letter-spacing: -0.5px; }
+    h2, h3 { font-weight: 700 !important; letter-spacing: -0.2px; }
+
+    div[data-testid="stTabs"] button {
+      border-bottom: 2px solid transparent !important;
+    }
+    div[data-testid="stTabs"] button[aria-selected="true"] {
+      color: #ff70ae !important;
+      font-weight: 700 !important;
+      border-bottom: 3px solid #ff70ae !important;
+    }
+    div[data-testid="stTabs"] button::after {
+      background: none !important;
+    }
+
+    div[data-testid="stFormSubmitButton"] button,
+    div[data-testid="stBaseButton-primary"] button {
+      background-color: #111111 !important;
+      color: #ffffff !important;
+      font-weight: 800 !important;
+      border: none !important;
+      border-radius: 12px !important;
+      padding: 0.6rem 1.2rem !important;
+    }
+    div[data-testid="stFormSubmitButton"] button:hover,
+    div[data-testid="stBaseButton-primary"] button:hover {
+      background-color: #000000 !important;
+      color: #ffffff !important;
+    }
+
+    div[data-testid="stButton"] button[kind="secondary"] {
+      background-color: #ffffff !important;
+      color: #111111 !important;
+      border: 2px solid #111111 !important;
+      font-weight: 700 !important;
+      border-radius: 12px !important;
+      padding: 0.55rem 1.1rem !important;
+    }
+    div[data-testid="stButton"] button[kind="secondary"]:hover {
+      background-color: #111111 !important;
+      color: #ffffff !important;
+    }
+
+    div[data-testid="stVerticalBlock"] { gap: 0.55rem; }
+    p { margin-bottom: 0.25rem; }
+    [data-testid="stMarkdownContainer"] p { margin-bottom: 0.15rem; }
+    [data-testid="stCaptionContainer"] { margin-top: -0.2rem; }
+
+    /* ===== Vocabulary list rows ===== */
+    .pa-front {
+        font-weight: 700;
+        font-size: 16px;
+        line-height: 1.3;
+        word-break: break-word;
+        display: block;
+        margin: 0;
+        padding: 0;
+    }
+    .pa-back {
+        font-size: 14px;
+        opacity: 0.55;
+        line-height: 1.3;
+        word-break: break-word;
+        display: block;
+        margin: 1px 0 0 0;
+        padding: 0 0 8px 0;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.pa-front) {
+        border-bottom: 1px solid rgba(0,0,0,0.07);
+        padding: 6px 0 !important;
+        align-items: center !important;
+        flex-wrap: nowrap !important;
+        gap: 4px !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.pa-front)
+        > div[data-testid="stColumn"]:first-child {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        width: auto !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.pa-front)
+        > div[data-testid="stColumn"]:last-child {
+        flex: 0 0 44px !important;
+        min-width: 44px !important;
+        width: 44px !important;
+        padding: 0 !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.pa-front)
+        > div[data-testid="stColumn"]:last-child * {
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    div[data-testid="stHorizontalBlock"]:has(.pa-front)
+        div[data-testid="stButton"] button {
+        background: rgba(0,0,0,0.06) !important;
+        border: none !important;
+        box-shadow: none !important;
+        width: 30px !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        padding: 0 !important;
+        font-size: 14px !important;
+        font-weight: 900 !important;
+        color: rgba(0,0,0,0.5) !important;
+        border-radius: 50% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+    div[data-testid="stHorizontalBlock"]:has(.pa-front)
+        div[data-testid="stButton"] button:hover {
+        background: rgba(0,0,0,0.15) !important;
+        color: rgba(0,0,0,0.9) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# -------------------------
+# Session state
+# -------------------------
+if "items" not in st.session_state:
+    st.session_state["items"] = []
+if "meta" not in st.session_state:
+    st.session_state["meta"] = {}
+if "removed" not in st.session_state:
+    st.session_state["removed"] = set()
 if "card_index" not in st.session_state:
     st.session_state["card_index"] = 0
 if "show_back" not in st.session_state:
     st.session_state["show_back"] = False
+if "direction" not in st.session_state:
+    st.session_state["direction"] = "target_first"
 
-# OpenAI client
+# -------------------------
+# OpenAI
+# -------------------------
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-SYSTEM_RULES_TEMPLATE = """
-You are a language teacher. Generate exactly {item_count} items about the user's topic.
+SYSTEM_RULES = """
+You are an expert language teacher and CEFR examiner with deep knowledge of
+vocabulary acquisition.
 
-Target language: {target_language}
-CEFR level: {cefr_level}
-Generation type: {generate_type}
+Your task: generate exactly {count} {kind} in {language} for a learner who
+wants to communicate confidently in real situations involving: {topic}
 
-CEFR guidance:
-- A1/A2: very common, concrete, high-frequency language.
-- B1: practical everyday language.
-- B2: more precise language; some abstraction.
-- C1/C2: advanced, nuanced language appropriate to the topic.
+CEFR LEVEL: {level}
+Use this definition strictly:
 
-STRICT output format:
-- Output ONLY {item_count} lines (no intro, no headings).
-- Each line MUST start with "- " (dash + space).
-- Each line MUST be: - <target language> — <English>
-- Use " — " exactly (space em-dash space). No extra text.
-- If you cannot follow the type rules, regenerate internally until you can.
+A1 — Very high-frequency words. Basic, concrete, essential survival vocabulary.
+     Example register: a tourist on their first day abroad.
 
-Type rules (apply ONLY the matching section):
+A2 — Common everyday words. Simple but slightly more varied than A1.
+     Avoid any word already typical at A1.
 
-[WORDS]
-- Output single-word items only (one token/word, or an article + single noun).
-- Allowed formats:
-  - Noun: article + singular noun (e.g., "el libro", "la casa"). No multi-word nouns.
-  - Verb/adjective/adverb: single word only. No article.
-- NOT allowed: phrases, collocations, multi-word items, sentences, punctuation.
+B1 — Topic-specific intermediate words. Less common than A2 but not technical.
+     A learner could encounter these in a newspaper or casual conversation.
+     Avoid any word typical at A1 or A2.
 
-[VERBS]
-- Output infinitive verbs only, single word (e.g., "hablar", "comer").
-- NOT allowed: any nouns, any sentences, any multi-word items.
+B2 — Moderately advanced, topic-specific. Words an educated native speaker
+     uses naturally in this context. Not found in a beginner list.
+     Avoid any word typical at A1, A2, or B1.
 
-[PHRASES]
-- Output complete, useful sentences a learner would actually say (8–14 words).
-- Each item MUST contain a verb and end with punctuation (., ?, !).
-- NOT allowed: single words, noun-only entries.
+C1 — Low-frequency, precise, or nuanced vocabulary. Register-aware.
+     Words that distinguish a fluent speaker from an intermediate one.
+     Avoid anything typical below C1.
 
-Quality rules:
-- Avoid English loanwords unless they are the most common term in the target language.
-- Keep items relevant to the topic and appropriate to the CEFR level.
+C2 — Rare, highly nuanced, or domain-specific. Native-level sophistication.
+     Words that even educated non-native speakers rarely know.
+     Avoid anything typical below C2.
+
+QUALITY RULES:
+- Choose words a native speaker would genuinely use in this specific situation
+- Prefer vocabulary that is DISTINCTIVE to this topic and this level
+- Do NOT choose the most obvious or generic words for the topic
+- Each word must feel meaningfully different in difficulty from the others
+
+SELF-CHECK:
+Before outputting, silently verify: would each item appear on a {level}
+vocabulary list — and NOT on a list one level below? If not, replace it.
+
+FORMAT RULES — follow exactly:
+- Output ONLY {count} lines. No intro, no commentary, no blank lines.
+- Every line: - <{language} word> — <English translation>
+- Separator is exactly " — " (space, em dash, space). Nothing else.
+- Do NOT use numbering like "1." or "1)".
 """
-
 
 # -------------------------
 # Generate tab
 # -------------------------
 with tab_generate:
-    with st.form("vocab_form"):
-        col1, col2, col3 = st.columns(3)
+    with st.form("generate_form"):
+        c1, c2, c3 = st.columns(3)
 
-        with col1:
-            generate_type = st.selectbox("Generate", ["Words", "Verbs", "Phrases"], index=0)
+        with c1:
+            kind = st.selectbox("Generate", ["Words", "Verbs", "Phrases"])
+        with c2:
+            language = st.selectbox("Language", ["Spanish", "French", "Italian", "German", "Catalan"])
+        with c3:
+            level = st.selectbox("Level", ["A1", "A2", "B1", "B2", "C1", "C2"], index=2)
 
-        with col2:
-            target_language = st.selectbox(
-                "Language",
-                ["Spanish", "French", "Italian", "German", "Catalan"],
-                index=0,
-            )
+        topic = st.text_input("Topic", placeholder="e.g. Rock climbing")
+        submit = st.form_submit_button("Generate")
 
-        with col3:
-            cefr_level = st.selectbox("Level", ["A1", "A2", "B1", "B2", "C1", "C2"], index=2)
+    if submit and topic.strip():
+        count = desired_count_for(kind)
+        rules = SYSTEM_RULES.format(count=count, language=language, level=level, kind=kind, topic=topic)
 
-        user_input = st.text_input("Topic or sentence", placeholder="e.g., Rock climbing")
-        generate = st.form_submit_button("Generate")
+        with st.spinner("Generating..."):
+            try:
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": rules},
+                        {"role": "user", "content": topic},
+                    ],
+                    temperature=0.7,
+                    max_tokens=800,
+                )
+            except Exception as e:
+                st.error(f"OpenAI request failed: {e}")
+                st.stop()
 
-    # --- Generate new list ---
-    if generate:
-        if not user_input.strip():
-            st.warning("Please enter a topic or sentence first.")
-        else:
-            item_count = desired_count_for(generate_type)
+        raw = response.choices[0].message.content or ""
+        items = parse_items(raw)
 
-            system_rules = SYSTEM_RULES_TEMPLATE.format(
-                target_language=target_language,
-                cefr_level=cefr_level,
-                generate_type=generate_type,
-                item_count=item_count,
-            )
+        if not items:
+            st.warning("No items parsed. Showing raw model output below (for debugging).")
+            st.code(raw)
 
-            max_tokens = 600 if generate_type == "Phrases" else 400
+        st.session_state["items"] = items
+        st.session_state["meta"] = {"kind": kind, "language": language, "level": level, "topic": topic}
+        st.session_state["removed"] = set()
+        st.session_state["card_index"] = 0
+        st.session_state["show_back"] = False
 
-            with st.spinner("Generating..."):
-                try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": system_rules},
-                            {"role": "user", "content": user_input},
-                        ],
-                        temperature=0.6,
-                        max_tokens=max_tokens,
-                    )
-                except Exception as e:
-                    st.error(f"OpenAI request failed: {e}")
-                    st.stop()
-
-            raw_text = response.choices[0].message.content
-            items = parse_items(raw_text)
-
-            st.session_state["last_items"] = items
-            st.session_state["last_meta"] = {
-                "generate_type": generate_type,
-                "target_language": target_language,
-                "cefr_level": cefr_level,
-                "topic": user_input,
-            }
-
-            # Reset flashcards to avoid stale indices
-            st.session_state["card_index"] = 0
-            st.session_state["show_back"] = False
-
-    # --- Show persisted results ---
-    meta = st.session_state.get("last_meta", {})
-    items = st.session_state.get("last_items", [])
-
-    label_map = {
-        "Words": "Your word list",
-        "Verbs": "Your verb list",
-        "Phrases": "Your phrase list",
-    }
-    current_type = meta.get("generate_type", generate_type)
-    st.subheader(label_map.get(current_type, "Your list"))
+    items = st.session_state["items"]
 
     if not items:
-        st.info("Generate a list to see results here.")
+        st.info("Generate a list to see results.")
     else:
-        st.caption(
-            f'{meta.get("target_language", "")} • {meta.get("cefr_level", "")} • {meta.get("generate_type", "")}'
-        )
+        desired = desired_count_for(st.session_state["meta"]["kind"])
+        missing = max(0, desired - len(items))
 
-        desired_count = desired_count_for(current_type)
-        missing = max(0, desired_count - len(items))
+        if st.button(f"Top up ({missing})", disabled=missing == 0, type="secondary"):
+            existing = {norm_key(i["front"]) for i in items}
+            excluded = existing | st.session_state["removed"]
 
-        # ---- Top up button ----
-        c1, c2 = st.columns([1, 3])
-        with c1:
-            topup_clicked = st.button(
-                f"Top up ({missing})" if missing else "Top up",
-                disabled=(missing == 0),
-                type="primary",
-            )
-        with c2:
-            if missing:
-                st.caption(f"Missing {missing} to reach {desired_count}.")
-            else:
-                st.caption(f"List is full ({desired_count}).")
-
-        if topup_clicked and missing > 0:
-            existing = st.session_state["last_items"]
-            existing_keys = sorted({norm_key(i["front"]) for i in existing if i.get("front")})[:80]
-
-            system_rules = SYSTEM_RULES_TEMPLATE.format(
-                target_language=meta.get("target_language", target_language),
-                cefr_level=meta.get("cefr_level", cefr_level),
-                generate_type=current_type,
-                item_count=missing,
+            meta = st.session_state["meta"]
+            rules = SYSTEM_RULES.format(
+                count=missing,
+                language=meta["language"],
+                level=meta["level"],
+                kind=meta["kind"],
+                topic=meta["topic"],
             )
 
-            dedupe_guard = ""
-            if existing_keys:
-                dedupe_guard = (
-                    "\n\nAdditional rule:\n"
-                    "- Do NOT output any item whose target-language side matches (case-insensitive) any of:\n"
-                    + "\n".join([f"  - {k}" for k in existing_keys])
-                    + "\n"
-                )
-
-            max_tokens = 600 if current_type == "Phrases" else 400
+            guard = ""
+            if excluded:
+                guard = "\nNever include these words — they have already been generated:\n" + "\n".join(f"- {k}" for k in excluded)
 
             with st.spinner("Topping up..."):
-                try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[
-                            {"role": "system", "content": system_rules + dedupe_guard},
-                            {"role": "user", "content": meta.get("topic", "") or "General"},
-                        ],
-                        temperature=0.6,
-                        max_tokens=max_tokens,
-                    )
-                except Exception as e:
-                    st.error(f"OpenAI request failed: {e}")
-                    st.stop()
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": rules + guard},
+                        {"role": "user", "content": meta["topic"]},
+                    ],
+                    temperature=0.7,
+                    max_tokens=800,
+                )
 
-            new_raw = response.choices[0].message.content
-            new_items = parse_items(new_raw)
-
-            merged = list(st.session_state["last_items"])
-            seen = {norm_key(i["front"]) for i in merged if i.get("front")}
+            new_items = parse_items(response.choices[0].message.content or "")
+            merged = list(items)
+            seen = {norm_key(i["front"]) for i in merged}
 
             for it in new_items:
                 k = norm_key(it["front"])
-                if k and k not in seen:
-                    seen.add(k)
+                if k and k not in seen and k not in st.session_state["removed"]:
                     merged.append(it)
+                    seen.add(k)
 
-            merged = merged[:desired_count]
-            st.session_state["last_items"] = merged
-
-            st.session_state["card_index"] = 0
-            st.session_state["show_back"] = False
-
-            st.success(f"Topped up. Items now: {len(merged)}")
+            st.session_state["items"] = merged[:desired]
             st.rerun()
 
         st.divider()
+        st.write("Tap ✕ to remove items you already know.")
 
-        # ---- Table-like list with per-row remove ----
-        st.write("Click ➖ to remove items you already know.")
+        for i, it in enumerate(st.session_state["items"]):
+            col_word, col_btn = st.columns([0.88, 0.12])
 
-        header = st.columns([3, 3, 1])
-        header[0].markdown("**Item**")
-        header[1].markdown("**Translation**")
-        header[2].markdown("**Remove**")
+            with col_word:
+                st.markdown(
+                    f'<span class="pa-front">{it["front"]}</span>'
+                    f'<span class="pa-back">{it["back"]}</span>',
+                    unsafe_allow_html=True,
+                )
 
-        for i, it in enumerate(st.session_state["last_items"]):
-            r1, r2, r3 = st.columns([3, 3, 1])
-            r1.write(it["front"])
-            r2.write(it["back"])
-
-            if r3.button("➖", key=f"remove_{i}"):
-                updated = list(st.session_state["last_items"])
-                updated.pop(i)
-                st.session_state["last_items"] = updated
-
-                st.session_state["card_index"] = 0
-                st.session_state["show_back"] = False
-
-                st.rerun()
-
+            with col_btn:
+                if st.button("✕", key=f"rm_{i}"):
+                    st.session_state["removed"].add(norm_key(it["front"]))
+                    st.session_state["items"].pop(i)
+                    st.session_state["card_index"] = 0
+                    st.session_state["show_back"] = False
+                    st.rerun()
 
 # -------------------------
 # Flashcards tab
 # -------------------------
 with tab_flashcards:
-    st.subheader("Flashcards")
-
-    items = st.session_state.get("last_items", [])
-    meta = st.session_state.get("last_meta", {})
+    items = st.session_state["items"]
 
     if not items:
-        st.info("Generate a list first, then come back here to practise with flashcards.")
+        st.info("Generate a list first.")
     else:
         total = len(items)
-
-        # Keep index in range if list length changes
-        if st.session_state["card_index"] >= total:
-            st.session_state["card_index"] = 0
-
-        st.caption(
-            f'{meta.get("target_language", "")} • {meta.get("cefr_level", "")} • {meta.get("generate_type", "")}'
-        )
-        st.write(f"Card: **{st.session_state['card_index'] + 1} / {total}**")
-
         idx = st.session_state["card_index"]
         card = items[idx]
 
-        # Colour depends on side
-        if st.session_state["show_back"]:
-            # English side → blue
-            st.markdown(
-                """
-                <style>
-                div[data-testid="stButton"] > button[kind="primary"] {
-                    background-color: #2563eb !important;
-                    color: white !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
+        direction = st.radio(
+            "Direction",
+            ["Target → English", "English → Target"],
+            horizontal=True,
+            index=0 if st.session_state["direction"] == "target_first" else 1,
+        )
+        st.session_state["direction"] = (
+            "target_first" if direction == "Target → English" else "english_first"
+        )
+
+        if st.session_state["direction"] == "target_first":
+            front, back = card["front"], card["back"]
         else:
-            # Target language side → green
-            st.markdown(
-                """
-                <style>
-                div[data-testid="stButton"] > button[kind="primary"] {
-                    background-color: #16a34a !important;
-                    color: white !important;
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
+            front, back = card["back"], card["front"]
 
-        card_text = card["back"] if st.session_state["show_back"] else card["front"]
-        card_label = "English" if st.session_state["show_back"] else "Target language"
+        text = back if st.session_state["show_back"] else front
 
-        # Click card to flip
-        if st.button(card_text, key="fc_card", type="primary", use_container_width=True):
+        if st.button(text, use_container_width=True):
             st.session_state["show_back"] = not st.session_state["show_back"]
             st.rerun()
 
-        st.caption(card_label)
+        c1, c2, c3 = st.columns(3)
 
-        col1, col2, col3 = st.columns(3)
-
-        with col1:
-            if st.button("⬅️ Previous", key="fc_prev", type="secondary"):
+        with c1:
+            if st.button("⬅️"):
                 st.session_state["card_index"] = (idx - 1) % total
                 st.session_state["show_back"] = False
                 st.rerun()
 
-        with col2:
-            if st.button("🔄 Flip", key="fc_flip", type="secondary"):
+        with c2:
+            if st.button("🔄"):
                 st.session_state["show_back"] = not st.session_state["show_back"]
                 st.rerun()
 
-        with col3:
-            if st.button("Next ➡️", key="fc_next", type="secondary"):
+        with c3:
+            if st.button("➡️"):
                 st.session_state["card_index"] = (idx + 1) % total
                 st.session_state["show_back"] = False
                 st.rerun()
